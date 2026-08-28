@@ -1,0 +1,306 @@
+// font files
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("assets/fonts/SpaceGrotesk-VariableFont_wght.ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "JetBrains Mono NL";
+  src: url("assets/fonts/JetBrainsMonoNL-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+// font definitions
+$font-family-sans-serif: "Space Grotesk", sans-serif;
+$font-family-monospace: "JetBrains Mono NL", monospace;
+
+// typography scale
+$type-display-xl-size: 42px;
+$type-display-xl-weight: 500;
+$type-display-xl-line: 1.11;
+
+$type-display-lg-size: 30px;
+$type-display-lg-weight: 500;
+$type-display-lg-line: 1.2;
+
+$type-heading-lg-size: 24px;
+$type-heading-lg-weight: 600;
+$type-heading-lg-line: 1.33;
+
+$type-heading-md-size: 20px;
+$type-heading-md-weight: 500;
+$type-heading-md-line: 1.4;
+
+$type-heading-sm-size: 18px;
+$type-heading-sm-weight: 500;
+$type-heading-sm-line: 1.56;
+
+$type-body-md-size: 16px;
+$type-body-md-weight: 400;
+$type-body-md-line: 1.5;
+
+$type-body-strong-size: 16px;
+$type-body-strong-weight: 500;
+$type-body-strong-line: 1.5;
+
+$type-body-sm-size: 14px;
+$type-body-sm-weight: 400;
+$type-body-sm-line: 1.43;
+
+$type-body-sm-strong-size: 14px;
+$type-body-sm-strong-weight: 500;
+$type-body-sm-strong-line: 1.43;
+
+$type-caption-sm-size: 12px;
+$type-caption-sm-weight: 400;
+$type-caption-sm-line: 1.33;
+
+$type-code-md-size: 16px;
+$type-code-md-weight: 400;
+$type-code-md-line: 1.5;
+
+$type-code-sm-size: 14px;
+$type-code-sm-weight: 400;
+$type-code-sm-line: 1.43;
+
+$type-button-md-size: 14px;
+$type-button-md-weight: 500;
+$type-button-md-line: 1;
+
+// document heading sizes (bootstrap vars, one per level)
+$h1-font-size: $type-display-xl-size;
+$h2-font-size: $type-display-lg-size;
+$h3-font-size: $type-heading-lg-size;
+$h4-font-size: $type-heading-md-size;
+$h5-font-size: $type-heading-sm-size;
+
+// body and code base sizes
+$font-size-base: $type-body-md-size;
+$line-height-base: $type-body-md-line;
+$font-weight-base: 350;
+$code-font-size: $type-code-sm-size;
+
+// spacing
+$spacing-xxs: 2px;
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 12px;
+$spacing-lg: 16px;
+$spacing-xl: 24px;
+$spacing-xxl: 32px;
+$spacing-section: 64px;
+
+// palette
+$brand-primary: #090909;
+$surface-canvas: #ffffff;
+$surface-soft: #fafafa;
+$surface-hairline: #e5e5e5;
+$surface-hairline-strong: #d4d4d4;
+$text-ink: #000000;
+$text-charcoal: #525252;
+$text-body: #737373;
+$text-mute: #a3a3a3;
+$color-link-mute: #737373;
+$color-terminal-red: #ff5f56;
+$color-terminal-yellow: #ffbd2e;
+$color-terminal-green: #27c93f;
+$surface-dark: #2a2a2a;
+$text-on-dark: #e5e5e5;
+
+// base document colors
+$body-bg: $surface-canvas;
+$body-color: $text-body;
+$headings-color: $text-ink;
+$link-color: rgba(59, 130, 246, 0.5);
+
+// code
+$code-bg: $surface-soft;
+$code-color: $text-body;
+
+// code block
+$code-block-bg: #3a3a3a;
+$btn-code-copy-color: $text-on-dark;
+$btn-code-copy-color-active: $surface-canvas;
+
+// sidebar
+$sidebar-fg: $text-mute;
+$sidebar-hl: $text-ink;
+
+// toc
+$toc-color: $text-ink;
+$toc-active-border: $text-ink;
+$toc-inactive-border: $text-mute;
+
+/*-- scss:rules --*/
+
+// heading weight/line-height per level
+h1 {
+  font-weight: $type-display-xl-weight;
+  line-height: $type-display-xl-line;
+}
+
+h2 {
+  font-weight: $type-display-lg-weight;
+  line-height: $type-display-lg-line;
+  margin-top: $spacing-section;
+}
+
+h3 {
+  font-weight: $type-heading-lg-weight;
+  line-height: $type-heading-lg-line;
+}
+
+h4 {
+  font-weight: $type-heading-md-weight;
+  line-height: $type-heading-md-line;
+}
+
+h5 {
+  font-weight: $type-heading-sm-weight;
+  line-height: $type-heading-sm-line;
+}
+
+// space between a heading and the content right after it
+h1,
+h2,
+h3,
+h4,
+h5 {
+  margin-bottom: $spacing-md;
+}
+
+// space between consecutive list items
+li + li {
+  margin-top: $spacing-xs;
+}
+
+// bold text weight (lighter than the browser default bold)
+strong,
+b {
+  font-weight: $type-body-strong-weight;
+}
+
+// inline code chips (excludes code blocks)
+:not(pre) > code {
+  background: $surface-soft;
+  color: $text-ink;
+  font-family: $font-family-monospace;
+  font-size: $type-code-sm-size;
+  border-radius: 6px;
+  padding: 0.15em 0.4em;
+}
+
+// mermaid diagrams (quarto reads these CSS vars, not mermaid's own themeVariables)
+:root {
+  --mermaid-bg-color: #{$surface-canvas};
+  --mermaid-fg-color: #{$text-body};
+  --mermaid-fg-color--lightest: #{$surface-soft};
+  --mermaid-fg-color--lighter: #{$text-ink};
+  --mermaid-node-bg-color: #{$surface-canvas};
+  --mermaid-node-fg-color: #{$text-ink};
+  --mermaid-edge-color: #{$text-body};
+  --mermaid-label-fg-color: #{$text-body};
+  --mermaid-label-bg-color: #{$surface-canvas};
+  --mermaid-font-family: "Space Grotesk", sans-serif;
+}
+
+.mermaid-js {
+  width: 80% !important;
+  max-width: 80% !important;
+  height: auto !important;
+}
+
+// copy button scaffold
+.code-copy-outer-scaffold {
+  width: calc(100% - 48px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+// code block (hairline border, no shadow)
+div.sourceCode {
+  background: #3a3a3a;
+  color: $text-on-dark;
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+// code output
+.cell-output-stdout {
+  width: calc(100% - 48px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.cell-output-stdout::before {
+  content: "Output";
+  display: block;
+  font-family: $font-family-monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: $text-mute;
+  margin-bottom: 0.4rem;
+}
+
+.cell-output-stdout pre {
+  background: $surface-canvas;
+  color: $text-body;
+  box-shadow: inset 0 0 0 1px $surface-hairline-strong;
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+// table output
+.cell-output-display:has(table) {
+  width: calc(100% - 48px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.cell-output-display:has(table)::before {
+  content: "Output";
+  display: block;
+  font-family: $font-family-monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: $text-mute;
+  margin-bottom: 0.4rem;
+}
+
+.cell-output-display:has(table) > div {
+  background: $surface-canvas;
+  box-shadow: inset 0 0 0 1px $surface-hairline-strong;
+  border-radius: 12px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.cell-output-display:has(table) table {
+  margin-bottom: 0;
+  border-collapse: collapse;
+}
+
+.cell-output-display:has(table) table th,
+.cell-output-display:has(table) table td {
+  border: none;
+  border-bottom: 1px solid $surface-hairline;
+  padding: 0.5rem 0.75rem;
+}
+
+.cell-output-display:has(table) table thead th {
+  color: $text-ink;
+  font-weight: $type-body-sm-strong-weight;
+  border-bottom: 1px solid $surface-hairline-strong;
+}
+
+.cell-output-display:has(table) table tr:last-child td {
+  border-bottom: none;
+}

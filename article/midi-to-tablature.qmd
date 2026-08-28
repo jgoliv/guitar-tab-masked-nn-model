@@ -1,0 +1,276 @@
+---
+title: "[MIDI to Tablature model: WIP]"
+author: "João Gabriel Oliveira"
+date: today
+jupyter: python3
+bibliography: assets/references/references.bib
+---
+
+```{python}
+#| echo: false
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+fm.fontManager.addfont("assets/fonts/SpaceGrotesk-VariableFont_wght.ttf")
+plt.rcParams["font.family"] = "Space Grotesk"
+```
+
+## The problem
+
+Suppose you have a MIDI file of a song you really want to learn on guitar. The problem is MIDI files don't have a way to encode strings or frets, they just signal that a note like C3 occurred at a specific time.
+
+But a C3 isn't just one place on the neck, like on a piano. You could play it on the 3rd fret of the A string, or the 8th fret of the low E. Depending on the context, picking the "wrong" option can make the next note impossible to reach, or force a chord into a hand shape nobody would actually play. So "convert this MIDI to tab" is actually two problems stacked on top of each other:
+
+1. **Where *can* each note go?** 
+2. **Where *should* each note go?**
+
+Problem 1 is just arithmetic. Problem 2 is where it gets interesting: out of all valid options, which one would a real guitarist actually pick, given what came right before it?
+
+The article *A Machine Learning Approach for MIDI to Guitar Tablature Conversion* [@kaliakatsos2025midi] presents a neural net that handles "what's idiomatic," paired with a plain search algorithm that handles "what's physically playable," combined into one tab decision per note (or chord) in the piece. That's our inspiration here, not a spec to match exactly. In this article, we'll build our own version of that idea end to end, and try our own take on the "idiomatic" half using a Bayesian model.
+
+What we actually need is some kind of tab-labeled MIDI data. The paper trains on [DadaGP](https://arxiv.org/abs/2107.14653), which has 26,181 songs in *GuitarPro* (GP) format. GP format stores each note as a string and a fret, and the matching MIDI pitch can be derived from that.
+
+DadaGP isn't publicly downloadable, though. So we're using [guitar_tab](https://huggingface.co/datasets/vldsavelyev/guitar_tab), an openly downloadable Hugging Face dataset built from GP files converted into a text format called *alphaTex*.
+
+Before we dive deeper into the dataset, let us see how we'll represent MIDI inputs.
+
+## MIDI inputs
+
+### What does a MIDI file look like?
+
+Here's what a 1-second C major chord (C4, E4, G4) MIDI file looks like as a Python object:
+
+```{python}
+import mido
+mid = mido.MidiFile("assets/midi/c-major-chord.mid")
+print(mid)
+```
+\
+
+We have one `MidiTrack` that sends 3 `note_on` messages at once, holds them for a second, then sends 3 `note_off` messages.
+
+In a MIDI file we typically have several tracks, and it's common practice for a single track to hold a single instrument. In our model, we consider that to be the case.
+
+In a track, each message signals a note starting or stopping. It carries a `note` (the pitch, 0 to 127) and a `time` (ticks since the previous message). Summing those deltas gives the `tick`: the message's position, accumulated up to that message, in the smallest time unit a MIDI file has.
+
+### MidiFrames
+
+We'll turn a stream of messages into a sequence of snapshots, one per instant the set of sounding notes changes. Each one holds which notes ended up active at that tick.
+
+```{mermaid}
+%%{init: {'themeVariables': {'fontSize': '10px'}, 'flowchart': {'rankSpacing': 15, 'nodeSpacing': 15}}}%%
+flowchart TD
+    subgraph row0[" "]
+        direction LR
+        tick0["`**tick 0**
+        Message(note_on, note=60, time=0)
+        Message(note_on, note=64, time=0)
+        Message(note_on, note=67, time=0)`"]
+        tick0 --> f0["{tick: 0, pitches: (60, 64, 67)}"]
+    end
+
+    subgraph row1[" "]
+        direction LR
+        tick960["`**tick 960**
+        Message(note_off, note=60, time=960)
+        Message(note_off, note=64, time=0)
+        Message(note_off, note=67, time=0)`"]
+        tick960 --> f1["{tick: 960, pitches: ()}"]
+    end
+
+    row0 ~~~ row1
+
+    style row0 fill:none,stroke:none
+    style row1 fill:none,stroke:none
+```
+
+The problem with this encoding is that `pitches` is a tuple with variable length, and our model needs a fixed-size input. We use a 128-element binary tuple instead, one slot per possible MIDI pitch.
+
+Each frame (a snapshot of active pitches) is wrapped in a custom `MidiFrame` class with `tick` and `pitches` attributes. The function `convert_midi_track_to_frames` walks a `MidiTrack` and returns a list of `MidiFrame` objects, one per change:
+
+```{python}
+from src.transform import convert_midi_track_to_frames
+parsed = convert_midi_track_to_frames(mid.tracks[0])
+print(parsed)
+```
+\
+Since that's hard to read, we wrote a function that prints just the active pitch names (or numbers) instead, for quick visual inspection:
+
+```{python}
+from src.plot import print_midi_pitch_values
+print_midi_pitch_values(parsed, as_note_names=True)
+```
+\
+The `pitches` in each `MidiFrame` is what feeds the network, one 128-element vector per step, the input it uses to predict the tablature frame. `tick` isn't fed to the network, it's used later to reconstruct the output's timing.
+
+## Tablature inputs
+
+Each row in the [guitar_tab](https://huggingface.co/datasets/vldsavelyev/guitar_tab) dataset is a whole song. Its columns are `file`, the original GuitarPro filename, and `text`, the alphaTex song content.
+
+```{python}
+import pandas as pd
+df = pd.read_parquet("../data/raw/data.parquet")
+df.head()
+```
+\
+We'll pick the first song to follow for the rest of this section:
+
+```{python}
+example = df.iloc[0]
+body = example["text"]
+print(body)
+```
+\
+Each `track` initializes a new instrument and has `\instrument`, `\tuning`, and `\frets` attributes; our example only has one track.
+
+AlphaTex packs every track's notes into a single string, using a handful of notation types:
+
+- `:N`: sets the base duration for the following notes (`:8` eighth notes, `:4` quarter notes);
+- `fret.string`: a single note, e.g. `7.4` is fret 7 on string 4;
+- `(...)`: a chord, multiple notes played together;
+- `.N` right after a note or chord overrides its duration, ignoring the current `:N`;
+- `{...}`: a technique on a note, e.g. `{h}` for hammer-on;
+- `r`: a rest;
+- `|`: bar line.
+
+For training, we want one track per row, but right now we have one song per row, and a song can hold several tracks. So the first step is keeping only eligible tracks, meaning standard-tuning guitar tracks (`E5 B4 G4 D4 A3 E3`) with 24 frets.
+
+```{python}
+from src.transform import split_alphatex_into_track_blocks, parse_alphatex_track, is_eligible_track
+
+tracks = [parse_alphatex_track(b) for b in split_alphatex_into_track_blocks(body)]
+eligible_tracks = [t for t in tracks if is_eligible_track(t)]
+print(len(tracks), len(eligible_tracks))
+```
+\
+The model only cares about `(fret, string)` positions, so everything else gets dropped from each track's body.
+
+The animation below shows all the steps needed to turn the track's raw text into a list of playable positions. It tokenizes the body, filters out anything that isn't a note or a chord, simplifies leftover technique annotations, and encodes the survivors as `(fret, string)` pairs.
+
+<video autoplay loop muted playsinline width="100%">
+  <source src="assets/animations/TrackTokenization.mp4" type="video/mp4">
+</video>
+
+After the encoding, we end up with a list of *frames*, where each frame is a variable-length list of `(fret, string)` pairs, one per note, so a chord has several and a rest has none. A natural way to represent a frame is as a 6x25 binary grid, one row per string and one column per fret (plus the open string). But the network's dense layers need a fixed-size 1D input, so we flatten the 6x25 grid into a 150-element vector instead.
+
+Here's the whole track playing, frame by frame, both as a 6x25 grid and as a 150-element vector:
+
+```{python}
+from src.transform import convert_track_body_to_tab_frames
+from src.plot import animate_tab_frame_encoding
+
+track = eligible_tracks[0]
+tab_frames = convert_track_body_to_tab_frames(track["body"])
+
+animate_tab_frame_encoding(tab_frames)
+```
+\
+
+We don't precompute this vector for the whole dataset upfront, doing that for every frame in every track blows up memory fast (tens of millions of frames, each a 150-element tuple). Instead, we cache only the compact `(fret, string)` positions to disk, and build the dense vector lazily, per example, at train time.
+
+Bottom line: given a tablature file, we extract its eligible tracks, then for each one, a list of 150-element 1D vectors, one per frame, each marking which `(fret, string)` positions are active. That's the tablature half of every training example.
+
+## Training pairs
+
+Our model's input is:
+
+- the last four tablature frames, for context (4x150 = 600 binary digits);
+- the current frame's midi pitches, derived directly from its tab positions (128 binary digits),
+
+flattened into one 728-element vector. The target is the current tablature frame itself, the 150-element vector the model has to predict.
+
+```{python}
+from src.transform import convert_tab_frames_to_input_and_target
+
+x, y = convert_tab_frames_to_input_and_target(tab_frames, 10)
+print(len(x), len(y))
+```
+\
+The network itself is feedforward, so it can only see one frame plus its 4-frame context per prediction, never a whole track at once. Context doesn't leak between tracks either, each one starts counting its own frames from zero, and the earliest frames just get all-zero padding in place of the missing history.
+
+The animation below plays this out frame by frame across the whole track, rebuilding the 600, 128, and 728-element trio at each step:
+
+```{python}
+from src.plot import animate_training_pair_construction
+animate_training_pair_construction(tab_frames)
+```
+\
+
+The current position never reaches the network, it's the label we're trying to predict. What actually enters the network is pitches (128), the notes extracted from that same position. Zoomed out, the pipeline looks like this:
+
+::: {.column-page}
+```{mermaid}
+%%{
+    init: {
+        'themeVariables': {
+            'fontFamily': 'Space Grotesk', 
+            'fontSize': '15px'
+        },
+        'flowchart': {
+            'curve': 'stepBefore', 
+            'nodeSpacing': 30,
+            'rankSpacing': 30
+        }
+    }
+}%%
+
+flowchart LR
+    dataset[("dataset row")]
+
+    subgraph trackstack[" "]
+        direction TB
+        dotsTop["<span style=font-size:28px>⋮</span>"]
+        trackJPlus1("track j+1")
+        trackJ("track j")
+        trackJMinus1("track j-1")
+        dotsBottom["<span style=font-size:28px>⋮</span>"]
+    end
+
+    frames("tab_frames")
+
+    tabi("positions at i (150)")
+
+    subgraph positionsGroup[" "]
+        direction TB
+        tabi1("positions at i-1 (150)")
+        tabi2("positions at i-2 (150)")
+        tabi3("positions at i-3 (150)")
+        tabi4("positions at i-4 (150)")
+    end
+
+    context("context (600)")
+    pitches("pitches (128)")
+    input("input (728)")
+    network("network")
+    output("output (150)")
+
+    dataset --- trackJ
+    trackJ --- frames
+    frames --- tabi
+    frames --- positionsGroup
+    tabi1 ~~~ tabi2
+    tabi2 ~~~ tabi3
+    tabi3 ~~~ tabi4
+    positionsGroup --- context
+    tabi -- "extract pitches from current position" --- pitches
+    pitches --- input
+    context --- input
+    input --- network
+    network --- output
+
+    class dataset,frames,trackJ,tabi1,tabi2,tabi3,tabi4,tabi,network,output neutral
+    class trackJPlus1,trackJMinus1 unused
+    class dotsTop,dotsBottom dots
+    class context,pitches,input current
+
+    style positionsGroup fill:#ffffff,stroke:#525252
+
+    style trackstack fill:none,stroke:none
+
+    classDef current fill:#ffe8e6,stroke:#FF160A,color:#FF160A
+    classDef history fill:#f5f5f5,stroke:#525252,color:#525252
+    classDef unused fill:#ffffff,stroke:#a3a3a3,color:#a3a3a3
+    classDef neutral fill:#ffffff,stroke:#525252,color:#525252
+    classDef dots fill:none,stroke:none,color:#a3a3a3
+```
+:::
