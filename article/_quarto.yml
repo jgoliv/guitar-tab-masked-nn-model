@@ -27,3 +27,4 @@ format:
 
 execute:
   cache: true
+  freeze: true

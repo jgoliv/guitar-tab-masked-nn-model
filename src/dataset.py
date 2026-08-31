@@ -7,6 +7,7 @@ import pandas as pd
 from src.transform import (
     convert_track_body_to_tab_frames,
     is_eligible_track,
+    normalize_cached_tab_frames,
     parse_alphatex_track,
     split_alphatex_into_track_blocks,
 )
@@ -44,6 +45,13 @@ def build_processed_tracks_dataset(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tracks.to_parquet(out_path)
     return out_path
+
+
+def load_processed_tracks_dataset(path: Path = Path("data/processed/tab_tracks.parquet")) -> pd.DataFrame:
+    """Load the cached processed tracks parquet, normalizing tab_frames back to plain tuples."""
+    df = pd.read_parquet(path)
+    df["tab_frames"] = df["tab_frames"].apply(normalize_cached_tab_frames)
+    return df
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import ListedColormap
@@ -17,6 +18,7 @@ import manimpango
 logging.getLogger("matplotlib.animation").setLevel(logging.WARNING)
 
 from src.transform import (
+    candidate_positions,
     convert_positions_to_tab_grid,
     convert_positions_to_tab_vector,
     convert_tab_frames_to_input_and_target,
@@ -89,6 +91,47 @@ def _plot_grid(grid, ax=None, cmap=None, color=_CHARCOAL, vmin=0, vmax=1, title=
 def _plot_tablature_frame(frame, ax=None):
     """Draw a tablature frame's positions on a fretboard grid."""
     return _plot_grid(convert_positions_to_tab_grid(frame), ax=ax, title=f"{frame}")
+
+
+def plot_note_probabilities(pitch, prev_hand_fret, score_fn, ax=None, title=None):
+    """Draw a note's candidate string/fret positions as a softmax-normalized probability heatmap.
+
+    `score_fn(fret, dist, is_open)` scores one candidate; scores are softmax-normalized across
+    the pitch's candidates so the grid reads as a probability distribution, like the paper's
+    raw (pre-search) network output.
+    """
+    candidates = candidate_positions(pitch)
+    scores = np.array([score_fn(fret, abs(fret - prev_hand_fret), int(fret == 0)) for fret, _ in candidates])
+    probs = np.exp(scores - scores.max())
+    probs /= probs.sum()
+
+    grid = [[0.0] * 25 for _ in range(6)]
+    for (fret, string), prob in zip(candidates, probs):
+        grid[string - 1][fret] = prob
+
+    return _plot_grid(grid, ax=ax, cmap="viridis", vmin=0, vmax=1, title=title or f"pitch {pitch}")
+
+
+def plot_prediction_example(x, y_true, probs, context=4, title=None):
+    """Draw a training example's context frames, ground truth, and predicted probability heatmap side by side.
+
+    `x` is the model's 728-element input, `y_true` the 150-element target, `probs` the model's
+    150-element output already passed through sigmoid, like the paper's raw (pre-search) output.
+    """
+    fig, axes = plt.subplots(1, context + 2, figsize=(3 * (context + 2), 2.2))
+
+    history = np.asarray(x[: context * 150]).reshape(context, 6, 25)
+    for i, ax in enumerate(axes[:context]):
+        _plot_grid(history[i], ax=ax, title=f"i-{context - i}")
+
+    _plot_grid(np.asarray(y_true).reshape(6, 25), ax=axes[context], title="actual")
+    _plot_grid(np.asarray(probs).reshape(6, 25), ax=axes[context + 1], cmap="gray_r", title="probabilities")
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
 
 def _plot_vector_strip(ax, vector, label, color=_CHARCOAL, highlight_from=None):
     """Draw a 1-row binary strip, highlighting everything from `highlight_from` onward."""

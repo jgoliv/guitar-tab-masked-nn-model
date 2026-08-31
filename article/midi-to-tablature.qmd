@@ -51,7 +51,7 @@ We have one `MidiTrack` that sends 3 `note_on` messages at once, holds them for 
 
 In a MIDI file we typically have several tracks, and it's common practice for a single track to hold a single instrument. In our model, we consider that to be the case.
 
-In a track, each message signals a note starting or stopping. It carries a `note` (the pitch, 0 to 127) and a `time` (ticks since the previous message). Summing those deltas gives the `tick`: the message's position, accumulated up to that message, in the smallest time unit a MIDI file has.
+In a track, each message signals a note starting or stopping. It carries a `note` (the pitch, 0 to 127) and a `time` (ticks since the previous message). Summing those deltas gives the `tick`, the message's position, accumulated up to that message, in the smallest time unit a MIDI file has.
 
 ### MidiFrames
 
@@ -274,3 +274,82 @@ flowchart LR
     classDef dots fill:none,stroke:none,color:#a3a3a3
 ```
 :::
+
+## Training the model
+
+### Dipping our toes in
+
+Before touching the paper's own architecture, we start with a simple MLP.
+
+First, a heads up: the whole dataset has 101,147 eligible tracks, a median of 367 frames each, adding up to 48.6 million frames total. Converting all of it into dense input and target arrays upfront would need about 43GB of memory. For that reason, we stored the processed data as compact `(fret, string)` positions rather than dense vectors, and only build dense arrays for the smaller sample of tracks we actually train on.
+
+For this first pass, we sample 1000 tracks and split by whole track, into 700 for training, 150 for validation, and 150 for test.
+
+```{python}
+import numpy as np
+from src.transform import normalize_cached_tab_frames
+
+df = pd.read_parquet("../data/processed/tab_tracks.parquet")
+
+rng = np.random.default_rng(0)
+sample_idx = rng.choice(df.index, size=1000, replace=False)
+rng.shuffle(sample_idx)
+
+# parquet has no tuple type, so positions come back as nested arrays instead of plain tuples
+def normalized(tracks):
+    return tracks.assign(
+        tab_frames=lambda d: d["tab_frames"].apply(normalize_cached_tab_frames)
+    )
+
+df_test = normalized(df.loc[sample_idx[:150]])
+df_val = normalized(df.loc[sample_idx[150:300]])
+df_train = normalized(df.loc[sample_idx[300:]])
+
+df_train.head()
+```
+\
+`convert_tracks_to_training_arrays` stacks every sampled track's frames into flat `X` and `y` arrays, one row per frame, using the same 728-input, 150-target pair from before.
+
+```{python}
+from src.transform import convert_tracks_to_training_arrays
+
+X_train, y_train = convert_tracks_to_training_arrays(df_train["tab_frames"])
+X_val, y_val = convert_tracks_to_training_arrays(df_val["tab_frames"])
+X_train.shape, X_val.shape
+```
+That's 339,575 training rows out of just 700 tracks.
+
+We use PyTorch, wrapping the arrays in a `TensorDataset` and feeding them through a `DataLoader` for batched training.
+
+```{python}
+import torch
+from torch.utils.data import TensorDataset, DataLoader
+
+X_train_t = torch.tensor(X_train, dtype=torch.float32)
+y_train_t = torch.tensor(y_train, dtype=torch.float32)
+X_val_t = torch.tensor(X_val, dtype=torch.float32)
+y_val_t = torch.tensor(y_val, dtype=torch.float32)
+
+train_loader = DataLoader(TensorDataset(X_train_t, y_train_t), batch_size=32, shuffle=True)
+val_loader = DataLoader(TensorDataset(X_val_t, y_val_t), batch_size=32)
+```
+
+The network is three `Linear` layers funneling 728 down to 150, with `ReLU` activation in between. We use `BCEWithLogitsLoss` since a frame can have zero, one, or several active positions at once. Sigmoid is applied inside it, so the last layer has no activation of its own.
+
+```{python}
+import torch.nn as nn
+
+torch.manual_seed(42)
+
+model = nn.Sequential(
+    nn.Linear(728, 512),
+    nn.ReLU(),
+    nn.Linear(512, 256),
+    nn.ReLU(),
+    nn.Linear(256, 150),
+)
+
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+criterion = nn.BCEWithLogitsLoss()
+```
+\
