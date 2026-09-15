@@ -26,5 +26,4 @@ format:
       gutter-width: 1.5em
 
 execute:
-  cache: true
   freeze: true

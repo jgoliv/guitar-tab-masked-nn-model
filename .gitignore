@@ -13,5 +13,4 @@ __pycache__/
 /article/.gitignore
 /article/.quarto/
 /article/_output/
-/article/.jupyter_cache/
 **/*.quarto_ipynb

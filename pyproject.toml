@@ -9,7 +9,6 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "datasets (>=3.0.0,<4.0.0)",
     "matplotlib (>=3.11.1,<4.0.0)",
-    "jupyter-cache (>=1.0.1,<2.0.0)",
     "torch (>=2.13.0,<3.0.0)",
     "torchmetrics (>=1.9.0,<2.0.0)"
 ]
