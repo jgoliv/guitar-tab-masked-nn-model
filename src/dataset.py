@@ -7,7 +7,6 @@ import pandas as pd
 from src.transform import (
     convert_track_body_to_tab_frames,
     is_eligible_track,
-    normalize_cached_tab_frames,
     parse_alphatex_track,
     split_alphatex_into_track_blocks,
     trim_leading_rests,
@@ -21,7 +20,7 @@ def fetch_dataset(out_path=Path("data/raw/data.parquet")):
 
 
 def build_processed_tracks_dataset(in_path=Path("data/raw/data.parquet"), out_path=Path("data/processed/tab_tracks.parquet")):
-    """Extract every eligible track from the raw dataset and cache its tab frames as parquet."""
+    """cache every eligible, deduplicated track's frames as parquet."""
     df = pd.read_parquet(in_path)
 
     rows = []
@@ -46,18 +45,23 @@ def build_processed_tracks_dataset(in_path=Path("data/raw/data.parquet"), out_pa
     return out_path
 
 
+def _normalize_cached_tab_frames(tab_frames):
+    """parquet returns nested numpy arrays; turn them back into (fret, string) tuples."""
+    return [[tuple(int(v) for v in position) for position in frame] for frame in tab_frames]
+
+
 def load_processed_tracks_dataset(path=Path("data/processed/tab_tracks.parquet"), files: list | None = None):
-    """Load the cached tracks parquet, optionally filtered to `files`, with tab_frames back as tuples."""
+    """load the cached tracks, optionally only those from `files`."""
     if files is not None:
         df = pd.read_parquet(path, filters=[("file", "in", files)])
     else:
         df = pd.read_parquet(path)
-    df["tab_frames"] = df["tab_frames"].apply(normalize_cached_tab_frames)
+    df["tab_frames"] = df["tab_frames"].apply(_normalize_cached_tab_frames)
     return df
 
 
 def split_tracks_by_song(df_files, n_train, n_val, n_test, seed=0) -> tuple[list, list, list]:
-    """Split songs into train/val/test, returning file lists to load afterwards."""
+    """split by song, drawing test and val first so they don't change with `n_train`; returns file lists."""
     file_track_counts = df_files["file"].value_counts()
 
     rng = np.random.default_rng(seed)
