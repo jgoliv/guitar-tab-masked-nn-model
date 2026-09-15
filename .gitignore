@@ -9,9 +9,6 @@
 __pycache__/
 .DS_Store
 
-# for study and experimentations
-/notebooks/
-
 # quarto build artifacts
 /article/.gitignore
 /article/.quarto/
