@@ -1,6 +1,7 @@
 # regenerate via dataset.py
 /data/processed
 /data/raw
+/data/models
 
 # local tooling
 .ipynb_checkpoints/
