@@ -14,7 +14,7 @@ format:
     smooth-scroll: true
     theme:
       - assets/theme/theme.scss
-    highlight-style: assets/theme/highlight.theme
+    highlight-style: github-dark
     mainfont: "Space Grotesk"
     fontsize: 16px
     fig-align: center
