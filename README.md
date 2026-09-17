@@ -1,5 +1,3 @@
-# midi-to-tablature-nn-model
-
 Reimplementation of *A Machine Learning Approach for MIDI to Guitar Tablature Conversion*
 (Kaliakatsos-Papakostas et al., 2025, [arXiv:2510.10619](https://arxiv.org/abs/2510.10619)).
 
