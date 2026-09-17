@@ -257,6 +257,33 @@ div.sourceCode {
   overflow-y: auto;
 }
 
+main table:not(.cell-output-display table) {
+  width: auto;
+  border-collapse: collapse;
+  margin: 1.25rem auto;
+  background: $surface-canvas;
+  box-shadow: inset 0 0 0 1px $surface-hairline-strong;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+main table:not(.cell-output-display table) th,
+main table:not(.cell-output-display table) td {
+  border: none;
+  border-bottom: 1px solid $surface-hairline;
+  padding: 0.5rem 1rem;
+}
+
+main table:not(.cell-output-display table) thead th {
+  color: $text-ink;
+  font-weight: $type-body-sm-strong-weight;
+  border-bottom: 1px solid $surface-hairline-strong;
+}
+
+main table:not(.cell-output-display table) tr:last-child td {
+  border-bottom: none;
+}
+
 // table output
 .cell-output-display:has(table) {
   width: calc(100% - 48px);

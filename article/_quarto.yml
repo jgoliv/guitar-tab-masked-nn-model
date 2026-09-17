@@ -2,7 +2,7 @@ project:
   type: default
   output-dir: _output
 
-title: "MIDI to Guitar Tablature: teaching a network where to put your fingers"
+title: "From search step to output mask in a guitar tablature neural network"
 
 format:
   html:
@@ -14,7 +14,7 @@ format:
     smooth-scroll: true
     theme:
       - assets/theme/theme.scss
-    highlight-style: assets/theme/highlight.theme
+    highlight-style: github-dark
     mainfont: "Space Grotesk"
     fontsize: 16px
     fig-align: center
@@ -26,5 +26,4 @@ format:
       gutter-width: 1.5em
 
 execute:
-  cache: true
   freeze: true

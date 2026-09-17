@@ -1,6 +1,7 @@
 # regenerate via dataset.py
 /data/processed
 /data/raw
+/data/models
 
 # local tooling
 .ipynb_checkpoints/
@@ -8,12 +9,8 @@
 __pycache__/
 .DS_Store
 
-# for study and experimentations
-/notebooks/
-
 # quarto build artifacts
 /article/.gitignore
 /article/.quarto/
 /article/_output/
-/article/.jupyter_cache/
 **/*.quarto_ipynb
