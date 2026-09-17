@@ -1,5 +1,5 @@
 ---
-title: "From search step to output mask in a guitar tablature neural network"
+title: "Output mask in a guitar tablature neural network"
 author: "João Gabriel Oliveira"
 date: today
 jupyter: python3

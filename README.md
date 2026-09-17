@@ -11,7 +11,7 @@ Here I use a simpler network and benchmark the impact of a mask of the possible 
 replaced by a large negative value, which the sigmoid turns into zero, so an impossible position
 never gets predicted.
 
-Full write-up: [From search step to output mask in a guitar tablature neural network](https://jgoliv.github.io/portfolio/machine-learning/guitar-tab-masked-nn-model/article.html)
+Full write-up: [Output mask in a guitar tablature neural network](https://jgoliv.github.io/portfolio/machine-learning/guitar-tab-masked-nn-model/article.html)
 
 ## Setup
 
