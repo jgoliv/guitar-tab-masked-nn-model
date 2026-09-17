@@ -1,0 +1,800 @@
+---
+title: "From search step to output mask in a guitar tablature neural network"
+author: "João Gabriel Oliveira"
+date: today
+jupyter: python3
+bibliography: assets/references/references.bib
+---
+
+## Introduction
+
+Unlike a piano, a pitch like C3 can be played in two positions on the guitar, on the 3rd fret of the A string, or on the 8th fret of the low E. The list of options is arithmetic, but which one to pick depends on where your hand already is, on "what's idiomatic" for a real guitarist.
+
+The problem with converting MIDI to guitar tablature automatically is that MIDI only signals which pitches sounded at a given time, and the converter has to decide where on the neck to play them.
+
+I read a paper [@kaliakatsos2025midi] that does this conversion with a neural network. They feed it the last four positions and the current pitches, and it outputs a score for every `(fret, string)` combination. This means the network never sees which combinations are possible in the first place. That comes from a separate search step, which:
+
+- lists every fingering that produces the current pitches;
+- keeps the ones a hand can play (one note per string, no stretch wider than six frets);
+- picks whichever of those the network scored the highest.
+
+Here I try a simpler approach: a smaller network, but one that already knows which combinations are possible before it scores them. The idea is to measure how much this helps the model learn idiomatic fingering, instead of spending gradient on a rule that's just arithmetic.
+
+## Dataset
+
+Training needs tab-labeled MIDI data. The paper uses [DadaGP](https://arxiv.org/abs/2107.14653), which has 26,181 songs in *GuitarPro* (GP) format. GP format stores each note as a string and a fret, and the matching MIDI pitch can be derived from that.
+
+Since DadaGP isn't publicly downloadable, I'm using [guitar_tab](https://huggingface.co/datasets/vldsavelyev/guitar_tab), a Hugging Face dataset built from GP files converted into a text format called *alphaTex*.
+
+### Tablature inputs
+
+Each row in the dataset is a song. Its columns are `file`, the original GuitarPro filename, and `text`, the alphaTex song content.
+
+```{python}
+import pandas as pd
+df = pd.read_parquet("../data/raw/data.parquet")
+df.head()
+```
+\
+In a song, each `track` initializes a new instrument and has `\instrument`, `\tuning`, and `\frets` attributes; the example below only has one track.
+
+```{python}
+example = df.iloc[0]
+body = example["text"]
+print(body)
+```
+\
+AlphaTex uses these notation tokens:
+
+- `:N`: sets the base duration for the following notes (e.g., `:8` eighth notes, `:4` quarter notes);
+- `fret.string`: a single note (e.g., `7.4` is fret 7 on string 4);
+- `(...)`: multiple notes played together;
+- `.N` attached to a note/chord overrides its duration, ignoring the current `:N`;
+- `{...}`: a technique on a note (e.g., `{h}` for hammer-on);
+- `r`: a rest;
+- `|`: bar line.
+
+### Tidying tracks
+
+The steps:
+
+- keep only eligible tracks, meaning standard tuning (`E5 B4 G4 D4 A3 E3`) with 24 frets;
+- drop tracks whose notes are identical to one already kept;
+- keep only the `(fret, string)` positions, dropping the rest of the tokens;
+- trim the leading rests and drop the tracks that are nothing but rests.
+
+The third step is what changes the format. It tokenizes the body, drops anything that isn't a note or a chord, simplifies technique annotations, and encodes survivors as lists of tuples:
+
+<video autoplay loop muted playsinline width="100%">
+  <source src="assets/animations/TrackTokenization.mp4" type="video/mp4">
+</video>
+
+After the encoding, each track is a list of *frames*, each one a variable-length list of `(fret, string)` positions.
+
+```{python}
+from src.transform import (
+    split_alphatex_into_track_blocks,
+    parse_alphatex_track,
+    convert_track_body_to_tab_frames
+)
+
+track = parse_alphatex_track(split_alphatex_into_track_blocks(body)[0])
+tab_frames = convert_track_body_to_tab_frames(track["body"])
+
+print(tab_frames)
+```
+\
+Everything imported from `src` lives in the [article's repository](https://github.com/jgoliv/midi-to-tablature-nn-model).
+
+### Representing a frame
+
+A natural way to represent a frame is a 6x25 binary grid (one row per string and one column per fret, counting the open string). But dense layers need a fixed-size 1D input, so that grid gets flattened into a 150-element vector. Here's the whole track playing frame by frame:
+
+```{python}
+#| echo: false
+from src.plot import animate_tab_frame_encoding
+animate_tab_frame_encoding(tab_frames)
+```
+
+### Training pairs
+
+Each training example is a flat 728-element vector:
+
+- the last four tablature frames (4x150 = 600 binary digits);
+- the current frame's pitches, derived from its tab positions (128 binary digits).
+
+The target is the current tablature frame itself, the 150-element vector the network has to predict.
+
+```{python}
+#| echo: false
+from src.plot import animate_training_pair_construction
+animate_training_pair_construction(tab_frames)
+```
+\
+
+Zoomed out, the pipeline looks like this:
+
+::: {.column-page}
+```{mermaid}
+%%{
+    init: {
+        'themeVariables': {
+            'fontFamily': 'Space Grotesk',
+            'fontSize': '15px'
+        },
+        'flowchart': {
+            'curve': 'stepBefore',
+            'nodeSpacing': 30,
+            'rankSpacing': 30
+        }
+    }
+}%%
+
+flowchart LR
+    dataset[("dataset row")]
+
+    subgraph trackstack[" "]
+        direction TB
+        dotsTop["<span style=font-size:28px>⋮</span>"]
+        trackJPlus1("track j+1")
+        trackJ("track j")
+        trackJMinus1("track j-1")
+        dotsBottom["<span style=font-size:28px>⋮</span>"]
+    end
+
+    frames("tab_frames")
+
+    tabi("positions at i (150)")
+
+    subgraph positionsGroup[" "]
+        direction TB
+        tabi1("positions at i-1 (150)")
+        tabi2("positions at i-2 (150)")
+        tabi3("positions at i-3 (150)")
+        tabi4("positions at i-4 (150)")
+    end
+
+    context("context (600)")
+    pitches("pitches (128)")
+    input("input (728)")
+    network("network")
+    output("output (150)")
+
+    dataset --- trackJ
+    trackJ --- frames
+    frames --- tabi
+    frames --- positionsGroup
+    tabi1 ~~~ tabi2
+    tabi2 ~~~ tabi3
+    tabi3 ~~~ tabi4
+    positionsGroup --- context
+    tabi -- "extract pitches from current position" --- pitches
+    pitches --- input
+    context --- input
+    input --- network
+    network --- output
+
+    class dataset,frames,trackJ,tabi1,tabi2,tabi3,tabi4,tabi,network,output neutral
+    class trackJPlus1,trackJMinus1 unused
+    class dotsTop,dotsBottom dots
+    class context,pitches,input current
+
+    style positionsGroup fill:#ffffff,stroke:#525252
+
+    style trackstack fill:none,stroke:none
+
+    classDef current fill:#ffe8e6,stroke:#FF160A,color:#FF160A
+    classDef history fill:#f5f5f5,stroke:#525252,color:#525252
+    classDef unused fill:#ffffff,stroke:#a3a3a3,color:#a3a3a3
+    classDef neutral fill:#ffffff,stroke:#525252,color:#525252
+    classDef dots fill:none,stroke:none,color:#a3a3a3
+```
+:::
+
+### Scale
+
+`guitar_tab` has 47,299 songs, which turn into 100,780 eligible tracks and just under 47 million frames, a median of 352 per track. Every frame is one training example, so precomputing all of them means 47 million rows, each one with 728 numbers of input and 150 of target, around 41GB.
+
+That's why the cache on disk keeps the compact `(fret, string)` positions instead, and the dense arrays get built at train time.
+
+## Training the model
+
+The models get trained at six data sizes (500 to 16,000 tracks). Every run occurs outside this document, and the results are loaded here.
+
+### The candidate mask
+
+For a given pitch, the list of possible positions is a lookup from the tuning. Take the C3 from the intro, MIDI pitch 48:
+
+```{python}
+from src.transform import candidate_positions
+candidate_positions(48)
+```
+\
+Precisely the 3rd fret on the 5th string, and the 8th fret on the 6th.
+
+For every frame we build a *candidate mask* with `candidate_positions`, a 150-element vector marking every position that could produce that frame's pitches:
+
+```{python}
+#| echo: false
+from src.plot import animate_candidate_positions
+animate_candidate_positions(tab_frames)
+```
+\
+Given only the 728 input, the network learns idiomatic playing but also spends gradient pushing down positions that arithmetic already rules out.
+
+The mask goes into the model alongside the input. From there:
+
+- the network still scores all 150 positions;
+- inside the forward pass, before the loss is computed, PyTorch's `masked_fill` method replaces every score outside the mask by `-1e9`;
+- the sigmoid turns that into zero, so an impossible position never gets predicted.
+
+### Training dataset
+
+Sample:
+
+- 500 tracks for validation and 500 for test, the same in every run;
+- training sets from 500 to 16,000 tracks, each one containing the smaller ones.
+
+To avoid leakage, the split is done by song, not by track (one song can hold several eligible tracks and they can be very similar to each other).
+
+```{python}
+#| eval: false
+
+from src.dataset import load_processed_tracks_dataset, split_tracks_by_song
+from src.transform import convert_tracks_to_input_and_candidate_mask_arrays
+
+path = "../data/processed/tab_tracks.parquet"
+df_files = pd.read_parquet(path, columns=["file"])
+
+# val and test are drawn before train
+_, val_files, test_files = split_tracks_by_song(df_files, n_train=1, n_val=500, n_test=500, seed=1)
+
+df_heldout = load_processed_tracks_dataset(path, files=val_files + test_files)
+df_val = df_heldout[df_heldout["file"].isin(val_files)]
+df_test = df_heldout[df_heldout["file"].isin(test_files)]
+
+X_val, M_val, y_val = convert_tracks_to_input_and_candidate_mask_arrays(df_val["tab_frames"])
+X_test, M_test, y_test = convert_tracks_to_input_and_candidate_mask_arrays(df_test["tab_frames"])
+```
+The builder also returns `M`, the candidate mask for each frame. Both models will see the same `X` and `y`; only one of them looks at `M`.
+
+Each training size works out to:
+
+| tracks | frames    |
+|--------|-----------|
+| 500    | 216,759   |
+| 1,000  | 462,810   |
+| 2,000  | 932,773   |
+| 4,000  | 1,896,702 |
+| 8,000  | 3,791,513 |
+| 16,000 | 7,547,967 |
+
+### Model definition
+
+The paper uses convolutions to learn fingering shapes, building the fretboard as a 6x25 grid inside the network, so the filters pick up local patterns on it.
+
+Here the focus is measuring the impact of the mask, so we start with a plain MLP, three `Linear` layers funneling 728 down to 150 with `ReLU` in between. Both take `(x, mask)`, so the same training loop works for either, but the baseline will ignore the mask.
+
+```{python}
+#| eval: false
+
+import torch
+import torch.nn as nn
+
+def build_net(n_input):
+    return nn.Sequential(
+        nn.Linear(n_input, 512),
+        nn.ReLU(),
+        nn.Linear(512, 256),
+        nn.ReLU(),
+        nn.Linear(256, 150),
+    )
+
+class BaselineModel(nn.Module):
+    def __init__(self, n_input):
+        super().__init__()
+        self.net = build_net(n_input)
+
+    def forward(self, x, _mask):
+        return self.net(x)
+
+class MaskedModel(nn.Module):
+    def __init__(self, n_input):
+        super().__init__()
+        self.net = build_net(n_input)
+
+    def forward(self, x, mask):
+        logits = self.net(x)
+        return logits.masked_fill(mask == 0, -1e9)
+```
+
+### Parameters and loss function
+
+A frame can have zero, one or several positions active at once, so `BCEWithLogitsLoss` scores each of the 150 outputs on its own instead of picking one winner. It applies the sigmoid internally, so the last layer has no activation.
+
+```{python}
+#| eval: false
+n_epochs = 15
+learning_rate = 0.1
+criterion = nn.BCEWithLogitsLoss()
+```
+
+### Training runs
+
+```{python}
+#| echo: false
+import json
+sizes = [500, 1000, 2000, 4000, 8000, 16000]
+metrics = {n: json.load(open(f"../data/models/metrics_{n}.json")) for n in sizes}
+```
+
+```{python}
+#| eval: false
+#| code-fold: true
+#| code-summary: "Training function"
+
+if torch.backends.mps.is_available():
+    device = "mps"
+elif torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
+def evaluate(model, data_loader, metric_fn, aggregate_fn=torch.mean):
+    model.eval()
+    metrics = []
+
+    with torch.no_grad():
+        for X_batch, mask_batch, y_batch in data_loader:
+            X_batch = X_batch.to(device).float()
+            mask_batch = mask_batch.to(device).float()
+            y_batch = y_batch.to(device).float()
+            metrics.append(metric_fn(model(X_batch, mask_batch), y_batch))
+
+    return aggregate_fn(torch.stack(metrics))
+
+
+def train(model, optimizer, criterion, train_loader, val_loader, n_epochs):
+    best_val_loss = float("inf")
+    best_state = None
+    history = []
+
+    for epoch in range(n_epochs):
+        model.train()
+        total_loss = 0.
+
+        for X_batch, mask_batch, y_batch in train_loader:
+            X_batch = X_batch.to(device).float()
+            mask_batch = mask_batch.to(device).float()
+            y_batch = y_batch.to(device).float()
+
+            loss = criterion(model(X_batch, mask_batch), y_batch)
+            total_loss += loss.item()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+        train_loss = total_loss / len(train_loader)
+        val_loss = evaluate(model, val_loader, criterion).item()
+        history.append({"epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss})
+
+        print(f"epoch {epoch + 1} / {n_epochs}, train {train_loss:.4f}, val {val_loss:.4f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+    model.load_state_dict(best_state)
+    return history
+```
+
+```{python}
+#| eval: false
+#| code-fold: show
+#| code-summary: "Training loop"
+
+from torch.utils.data import TensorDataset, DataLoader
+
+for n_train in sizes:
+    train_files, _, _ = split_tracks_by_song(df_files, n_train=n_train, n_val=500, n_test=500, seed=1)
+    df_train = load_processed_tracks_dataset(path, files=train_files)
+    X_train, M_train, y_train = convert_tracks_to_input_and_candidate_mask_arrays(df_train["tab_frames"])
+
+    train_loader = DataLoader(
+        TensorDataset(torch.from_numpy(X_train), torch.from_numpy(M_train), torch.from_numpy(y_train)),
+        batch_size=32,
+        shuffle=True,
+    )
+
+    for Model in (BaselineModel, MaskedModel):
+        torch.manual_seed(42)
+        model = Model(n_input=728).to(device)
+
+        train(
+            model,
+            torch.optim.SGD(model.parameters(), lr=learning_rate),
+            criterion,
+            train_loader,
+            val_loader,
+            n_epochs=n_epochs,
+        )
+```
+
+## Results
+
+### Loss curves
+
+```{python}
+#| echo: false
+from src.plot import plot_loss_curves
+def loss_curves(n):
+    plot_loss_curves(
+        {"no mask": metrics[n]["history"]["baseline"], "candidate mask": metrics[n]["history"]["masked"]}
+    )
+```
+
+::: {.panel-tabset}
+
+#### 500
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(500)
+```
+
+#### 1,000
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(1000)
+```
+
+#### 2,000
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(2000)
+```
+
+#### 4,000
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(4000)
+```
+
+#### 8,000
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(8000)
+```
+
+#### 16,000
+
+```{python}
+#| echo: false
+#| fig-align: center
+loss_curves(16000)
+```
+
+:::
+
+At 500 tracks the loss curves never meet, but by 16,000 they almost do. In every run validation stays just above
+train and both are still falling at the last epoch, so nothing is overfitting.
+
+That's kind of expected. About 1% of the 150 target cells are active per frame on average (at most 6 can ever be on
+at once, and usually it's 1-2), and `BCEWithLogitsLoss` weighs every cell equally, so most of the gradient
+pushes the model toward saying zero everywhere. A loss curve dropping fast can just mean the model is getting rewarded
+for the inactive cells.
+
+The candidate mask takes most of those inactive cells out of the loss. What's left is the choice between positions
+that can actually produce the pitch. So the curves aren't measuring the same thing, and the gap between them doesn't
+tell us whether the mask made the model better.
+
+To actually tell, we'll use torchmetrics' `MultilabelExactMatch`. It thresholds each of the 150 outputs at 0.5 and
+counts a frame only when all of them match the target, then reports the fraction of frames that pass.
+
+### Exact match analysis
+
+```{python}
+#| echo: false
+import numpy as np
+import pandas as pd
+import torch
+
+from src.dataset import load_processed_tracks_dataset, split_tracks_by_song
+from src.model import BaselineModel, MaskedModel
+from src.plot import plot_model_comparison
+from src.transform import OPEN_STRING_PITCH, convert_tracks_to_input_and_candidate_mask_arrays
+
+path = "../data/processed/tab_tracks.parquet"
+_, _, test_files = split_tracks_by_song(
+    pd.read_parquet(path, columns=["file"]), n_train=1, n_val=500, n_test=500, seed=1
+)
+df_test = load_processed_tracks_dataset(path, files=test_files)
+X, M, y = convert_tracks_to_input_and_candidate_mask_arrays(df_test["tab_frames"])
+
+
+def load(model_cls, name):
+    model = model_cls(n_input=728)
+    model.load_state_dict(torch.load(f"../data/models/{name}_16000.pt", map_location="cpu"))
+    return model.eval()
+
+
+def predictions(model):
+    out = []
+    with torch.no_grad():
+        for i in range(0, len(X), 8192):
+            x = torch.from_numpy(X[i : i + 8192]).float()
+            m = torch.from_numpy(M[i : i + 8192]).float()
+            out.append((torch.sigmoid(model(x, m)) > 0.5).numpy())
+    return np.concatenate(out)
+
+
+baseline, masked = load(BaselineModel, "baseline"), load(MaskedModel, "masked")
+pred_baseline, pred_masked = predictions(baseline), predictions(masked)
+
+right_baseline = (pred_baseline == y).all(1)
+right_masked = (pred_masked == y).all(1)
+
+cell_pitch = np.array([OPEN_STRING_PITCH[s + 1] + f for s in range(6) for f in range(25)])
+pitch_of = np.zeros((150, 128), dtype=np.uint8)
+pitch_of[np.arange(150), cell_pitch] = 1
+target_pitches = (y @ pitch_of) > 0
+
+
+def error_breakdown(pred):
+    wrong = ~(pred == y).all(1)
+    impossible = wrong & (pred & (M == 0)).any(1)
+    same_pitches = (((pred.astype(np.uint8) @ pitch_of) > 0) == target_pitches).all(1)
+    return {
+        "played the correct pitch somewhere else": (wrong & ~impossible & same_pitches).sum(),
+        "missed a note": (wrong & ~impossible & ~same_pitches).sum(),
+        "predicted an impossible position": impossible.sum(),
+        "total": wrong.sum(),
+    }
+
+
+moved = [1416, 1598, 1599, 3937, 14721]
+missed = [33, 587, 3733, 5400, 8396]
+impossible = [21, 97061, 108073, 125900, 169723]
+rows = moved + missed + impossible
+
+with torch.no_grad():
+    x = torch.from_numpy(X[rows]).float()
+    m = torch.from_numpy(M[rows]).float()
+    probs_baseline = dict(zip(rows, torch.sigmoid(baseline(x, m)).numpy()))
+    probs_masked = dict(zip(rows, torch.sigmoid(masked(x, m)).numpy()))
+```
+
+What exact match reveals is that the mask mostly changes how fast the model learns.
+
+- with 500 tracks the masked model is already at 73%, and 32x more data only takes it to 92%;
+- the baseline starts at 47% and only reaches that same 73% at around 1,400 tracks.
+
+Much of the baseline's climb is tuning arithmetic learned from examples. The masked model is already handed it,
+so it learns the idiomatic part of the problem directly, which is why its curve is flatter the whole way.
+
+\
+
+```{python}
+#| echo: false
+#| fig-align: center
+from src.plot import plot_scaling_curve
+_ = plot_scaling_curve(metrics)
+```
+
+However, the baseline ends up learning the tuning on its own anyway, as the training set grows. Even so, the
+16,000-track models disagree somewhere:
+
+```{python}
+#| echo: false
+#| output: asis
+split = {
+    "both right": (right_baseline & right_masked).sum(),
+    "only the masked model": (~right_baseline & right_masked).sum(),
+    "only the baseline": (right_baseline & ~right_masked).sum(),
+    "both wrong": (~right_baseline & ~right_masked).sum(),
+}
+n_frames = len(y)
+
+print("| | frames |")
+print("|---|---|")
+for label, count in split.items():
+    print(f"| {label} | {count:,} ({count / n_frames * 100:.1f}%) |")
+print(f"| total | {n_frames:,} |")
+```
+
+With more training instances (~7.5 million frames) the masked model still comes out ahead. One might expect the
+frames it fixes to be pitch errors, but surprisingly that is not the case:
+
+```{python}
+#| echo: false
+#| output: asis
+errors_baseline = error_breakdown(pred_baseline)
+errors_masked = error_breakdown(pred_masked)
+
+print("| error | baseline | masked |")
+print("|---|---|---|")
+for label in errors_baseline:
+    print(f"| {label} | {errors_baseline[label]:,} | {errors_masked[label]:,} |")
+```
+
+A few examples:
+
+::: {.panel-tabset}
+
+### correct pitch somewhere else
+
+::: {.panel-tabset}
+
+#### 1
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = moved[0]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 2
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = moved[1]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 3
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = moved[2]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 4
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = moved[3]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 5
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = moved[4]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+:::
+
+### missed a note
+
+::: {.panel-tabset}
+
+#### 1
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = missed[0]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 2
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = missed[1]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 3
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = missed[2]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 4
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = missed[3]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 5
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = missed[4]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+:::
+
+### impossible position
+
+::: {.panel-tabset}
+
+#### 1
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = impossible[0]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 2
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = impossible[1]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 3
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = impossible[2]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 4
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = impossible[3]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+#### 5
+
+```{python}
+#| echo: false
+#| fig-align: center
+i = impossible[4]
+_ = plot_model_comparison(X[i], y[i], M[i], probs_baseline[i], probs_masked[i])
+```
+
+:::
+
+:::
+
+## Conclusion
+
+Both models reach around 91% exact match accuracy on the test set.
+
+Most of what's left is the idiomatic choice, the right notes played somewhere the original player didn't. More data
+lowers it a bit, and the paper also has the search step, which keeps only the fingerings a hand can play, one note
+per string and no stretch wider than six frets.
+
+The rest is where the mask pays off. A low-cost implementation that
+
+- never predicts an impossible position, by construction;
+- learns idiomatic playing faster (especially when training data is short), since cells outside the mask carry no
+  gradient and it trains only on the candidates, while the baseline spreads the same signal over 150 cells.
