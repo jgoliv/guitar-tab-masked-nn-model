@@ -84,7 +84,7 @@ tab_frames = convert_track_body_to_tab_frames(track["body"])
 print(tab_frames)
 ```
 \
-Everything imported from `src` lives in the [article's repository](https://github.com/jgoliv/midi-to-tablature-nn-model).
+Everything imported from `src` lives in the [article's repository](https://github.com/jgoliv/guitar-tab-masked-nn-model).
 
 ### Representing a frame
 
